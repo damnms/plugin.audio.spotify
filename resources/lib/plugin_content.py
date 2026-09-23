@@ -1619,29 +1619,47 @@ class PluginContent:
             cache_log(f'Retrieved {len(album_ids)} cached album ids for user "{self.__userid}".')
             return album_ids
 
-        albums = self.__spotipy.current_user_saved_albums(limit=50, offset=0)
-        count = len(albums["items"])
-        while albums["total"] > count:
-            albums["items"] += self.__spotipy.current_user_saved_albums(limit=50, offset=count)[
-                "items"
-            ]
-            count += 50
-        album_ids = [album["album"]["id"] for album in albums["items"]]
+        albums = self.__fetch_saved_albums()
+        album_ids = [album["id"] for album in albums]
         self.cache.set(cache_str, album_ids, checksum=checksum, expiration=LIBRARY_CACHE_TIME)
         cache_log(f'Retrieved {len(album_ids)} UNCACHED album ids for user "{self.__userid}".')
 
+        # The full albums came with the same requests. Keep them for the saved albums
+        # list, so they do not have to be fetched again.
+        self.__store_saved_albums(albums, album_ids)
+
         return album_ids
+
+    def __fetch_saved_albums(self) -> List[Dict[str, Any]]:
+        # Full album objects, 50 per request.
+        result = self.__spotipy.current_user_saved_albums(limit=50, offset=0)
+        items = result["items"]
+        while result["total"] > len(items):
+            page = self.__spotipy.current_user_saved_albums(limit=50, offset=len(items))["items"]
+            if not page:
+                break
+            items += page
+        return [item["album"] for item in items]
+
+    def __saved_albums_cache(self, album_ids: List[str]) -> Tuple[str, str]:
+        cache_str = f"spotify.savedalbums.{self.__userid}"
+        checksum = f"{self.__library_checksum()}-{len(album_ids)}"
+        return cache_str, checksum
+
+    def __store_saved_albums(self, albums: List[Dict[str, Any]], album_ids: List[str]):
+        albums = self.__prepare_album_listitems(albums=albums)
+        cache_str, checksum = self.__saved_albums_cache(album_ids)
+        self.cache.set(cache_str, albums, checksum=checksum)
+        return albums
 
     def __get_saved_albums(self) -> List[Dict[str, Any]]:
         album_ids = self.__get_saved_album_ids()
-        cache_str = f"spotify.savedalbums.{self.__userid}"
-        checksum = f"{self.__library_checksum()}-{len(album_ids)}"
+        cache_str, checksum = self.__saved_albums_cache(album_ids)
         albums = self.cache.get(cache_str, checksum=checksum)
         if albums:
             cache_log(f'Retrieved {len(albums)} cached albums for user "{self.__userid}".')
         else:
-            albums = self.__prepare_album_listitems(album_ids)
-            self.cache.set(cache_str, albums, checksum=checksum)
+            albums = self.__store_saved_albums(self.__fetch_saved_albums(), album_ids)
             cache_log(f'Retrieved {_get_len(albums)} UNCACHED albums for user "{self.__userid}".')
         return albums
 
@@ -1672,36 +1690,55 @@ class PluginContent:
             return track_ids
 
         # Get from api.
-        saved_tracks = self.__spotipy.current_user_saved_tracks(
-            limit=50, offset=0, market=self.__user_country
-        )
-        count = len(saved_tracks["items"])
-        while saved_tracks["total"] > count:
-            saved_tracks["items"] += self.__spotipy.current_user_saved_tracks(
-                limit=50, offset=count, market=self.__user_country
-            )["items"]
-            count += 50
-        track_ids = [track["track"]["id"] for track in saved_tracks["items"]]
+        tracks = self.__fetch_saved_tracks()
+        track_ids = [track["id"] for track in tracks]
         self.cache.set(cache_str, track_ids, checksum=checksum, expiration=LIBRARY_CACHE_TIME)
         cache_log(
             f'Retrieved {len(track_ids)} UNCACHED saved track ids for user "{self.__userid}".'
         )
 
+        # The full tracks came with the same requests. Keep them for the saved tracks
+        # list, so they do not have to be fetched again in chunks of 20.
+        self.__store_saved_tracks(tracks, track_ids)
+
         return track_ids
+
+    def __fetch_saved_tracks(self) -> List[Dict[str, Any]]:
+        # Full track objects, 50 per request.
+        result = self.__spotipy.current_user_saved_tracks(
+            limit=50, offset=0, market=self.__user_country
+        )
+        items = result["items"]
+        while result["total"] > len(items):
+            page = self.__spotipy.current_user_saved_tracks(
+                limit=50, offset=len(items), market=self.__user_country
+            )["items"]
+            if not page:
+                break
+            items += page
+        return [item["track"] for item in items]
+
+    def __saved_tracks_cache(self, track_ids: List[str]) -> Tuple[str, str]:
+        cache_str = f"spotify.savedtracks.{self.__userid}"
+        checksum = f"{self.__library_checksum()}-{len(track_ids)}"
+        return cache_str, checksum
+
+    def __store_saved_tracks(self, tracks: List[Dict[str, Any]], track_ids: List[str]):
+        tracks = self.__prepare_track_listitems(tracks=tracks)
+        cache_str, checksum = self.__saved_tracks_cache(track_ids)
+        self.cache.set(cache_str, tracks, checksum=checksum)
+        return tracks
 
     def __get_saved_tracks(self):
         # Get from cache first.
         track_ids = self.__get_saved_track_ids()
-        cache_str = f"spotify.savedtracks.{self.__userid}"
-
-        checksum = f"{self.__library_checksum()}-{len(track_ids)}"
+        cache_str, checksum = self.__saved_tracks_cache(track_ids)
         tracks = self.cache.get(cache_str, checksum=checksum)
         if tracks:
             cache_log(f'Retrieved {len(tracks)} cached saved tracks for user "{self.__userid}".')
         else:
             # Get from api.
-            tracks = self.__prepare_track_listitems(track_ids)
-            self.cache.set(cache_str, tracks, checksum=checksum)
+            tracks = self.__store_saved_tracks(self.__fetch_saved_tracks(), track_ids)
             cache_log(
                 f'Retrieved {_get_len(tracks)} UNCACHED saved tracks for user "{self.__userid}".'
             )
