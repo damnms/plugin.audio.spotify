@@ -39,8 +39,8 @@ Playlist = Dict[str, Union[str, Dict[str, List[Any]]]]
 DO_CACHE_LOGGING = False
 
 # How long the user's library (saved tracks, saved albums, followed artists) is kept
-# before asking Spotify again. Likes and follows done in Kodi call refresh_listing(),
-# which changes the library checksum, so those show up at once.
+# before asking Spotify again. Likes and follows done in Kodi change the library version
+# (see __library_changed), so those show up at once.
 LIBRARY_CACHE_TIME = datetime.timedelta(minutes=10)
 
 # How long we remember who the user is (id, email, country).
@@ -52,8 +52,10 @@ PLAYLIST_CHECK_TIME = datetime.timedelta(minutes=5)
 # Pause between precache steps. It gives the user's own clicks the CPU first.
 PRECACHE_PAUSE_SECONDS = 0.2
 
-# Window property that changes after a like, save or follow done in Kodi.
-LIBRARY_VERSION_PROPERTY = "spotify.library.version"
+# Cache entry that changes after a like, save or follow done in Kodi. It is kept in the
+# cache database (not a window property), so it survives a Kodi restart.
+LIBRARY_VERSION_KEY = "spotify.library.version"
+LIBRARY_VERSION_KEEP_TIME = datetime.timedelta(days=365)
 
 
 def cache_log(msg) -> None:
@@ -315,12 +317,14 @@ class PluginContent:
     def __library_checksum(self) -> str:
         # Never empty: an empty checksum would make simplecache skip the check and
         # return old entries written by earlier versions.
-        version = xbmcgui.Window(10000).getProperty(LIBRARY_VERSION_PROPERTY)
+        version = self.cache.get(LIBRARY_VERSION_KEY) or ""
         return f"library-{self.__addon.getSetting('cache_checksum')}-{version}"
 
     def __library_changed(self) -> None:
         # Only the small library lists must be reloaded, not the whole cache.
-        xbmcgui.Window(10000).setProperty(LIBRARY_VERSION_PROPERTY, str(time.time()))
+        self.cache.set(
+            LIBRARY_VERSION_KEY, str(time.time()), expiration=LIBRARY_VERSION_KEEP_TIME
+        )
         xbmc.executebuiltin("Container.Refresh")
 
     def refresh_listing(self) -> None:
