@@ -12,6 +12,7 @@ import datetime
 import time
 import sqlite3
 import json
+import zlib
 from functools import reduce
 
 class SimpleCache(object):
@@ -269,7 +270,9 @@ class SimpleCache(object):
             stringinput = "%s-%s" %(self.global_checksum, stringinput)
         else:
             stringinput = str(stringinput)
-        return reduce(lambda x, y: x + y, map(ord, stringinput))
+        # A real hash. The old sum of character codes made different inputs collide
+        # (e.g. "100-5" and "5-100"), so stale cache entries were seen as valid.
+        return zlib.crc32(stringinput.encode("utf-8"))
 
 
 def use_cache(cache_days=14):
