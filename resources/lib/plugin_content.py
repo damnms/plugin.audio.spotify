@@ -43,6 +43,9 @@ DO_CACHE_LOGGING = False
 # which changes the library checksum, so those show up at once.
 LIBRARY_CACHE_TIME = datetime.timedelta(minutes=10)
 
+# Pause between precache steps. It gives the user's own clicks the CPU first.
+PRECACHE_PAUSE_SECONDS = 0.2
+
 # Window property that changes after a like, save or follow done in Kodi.
 LIBRARY_VERSION_PROPERTY = "spotify.library.version"
 
@@ -686,12 +689,28 @@ class PluginContent:
         if self.default_view_artists:
             xbmc.executebuiltin(f"Container.SetViewMode({self.default_view_artists})")
 
-    def __get_playlist_details(self, playlist_id: str) -> Playlist:
-        playlist = self.__spotipy.playlist(
-            playlist_id,
-            fields="tracks(total),name,owner(id),id,snapshot_id",
-            market=self.__user_country,
-        )
+    def __get_playlist_details(
+        self, playlist_id: str, known_playlist: Dict[str, Any] = None
+    ) -> Playlist:
+        if (
+            known_playlist
+            and known_playlist.get("snapshot_id")
+            and "total" in known_playlist.get("tracks", {})
+        ):
+            # The user's playlist list already has all we need. This saves one call.
+            playlist = {
+                "id": known_playlist["id"],
+                "name": known_playlist["name"],
+                "owner": {"id": known_playlist["owner"]["id"]},
+                "snapshot_id": known_playlist["snapshot_id"],
+                "tracks": {"total": known_playlist["tracks"]["total"]},
+            }
+        else:
+            playlist = self.__spotipy.playlist(
+                playlist_id,
+                fields="tracks(total),name,owner(id),id,snapshot_id",
+                market=self.__user_country,
+            )
         # Get from cache first. Spotify changes 'snapshot_id' on every change to the
         # playlist, also when tracks are replaced or reordered and the total stays the same.
         cache_str = f"spotify.playlistdetails.{playlist['id']}"
@@ -1904,14 +1923,16 @@ class PluginContent:
             self.__win.setProperty("Spotify.PreCachedItems", "busy")
             user_playlists = self.__get_user_playlists(self.__userid)
             for playlist in user_playlists:
-                self.__get_playlist_details(playlist["id"])
-                if monitor.abortRequested():
+                if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
                     return
+                self.__get_playlist_details(playlist["id"], playlist)
+            if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
+                return
             self.__get_saved_albums()
-            if monitor.abortRequested():
+            if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
                 return
             self.__get_saved_artists()
-            if monitor.abortRequested():
+            if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
                 return
             self.__get_saved_tracks()
             del monitor
