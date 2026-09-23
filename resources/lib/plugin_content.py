@@ -637,15 +637,15 @@ class PluginContent:
                 f'Retrieved {album["tracks"]["total"]} cached tracks for album "{album["name"]}".'
             )
         else:
-            track_ids = []
-            count = 0
-            while album["tracks"]["total"] > count:
+            # The album already has the first page of tracks. Only fetch the rest.
+            track_ids = [track["id"] for track in album["tracks"].get("items", [])]
+            while album["tracks"]["total"] > len(track_ids):
                 tracks = self.__spotipy.album_tracks(
-                    album["id"], market=self.__user_country, limit=50, offset=count
+                    album["id"], market=self.__user_country, limit=50, offset=len(track_ids)
                 )["items"]
-                for track in tracks:
-                    track_ids.append(track["id"])
-                count += 50
+                if not tracks:
+                    break
+                track_ids += [track["id"] for track in tracks]
             album_tracks = self.__prepare_track_listitems(track_ids, album_details=album)
             self.cache.set(cache_str, album_tracks, checksum=checksum)
             cache_log(
@@ -654,9 +654,21 @@ class PluginContent:
 
         return album_tracks
 
+    def __get_album(self, album_id: str) -> Dict[str, Any]:
+        # Albums do not change, so do not ask Spotify again on every visit.
+        cache_str = f"spotify.album.{album_id}"
+        checksum = self.__cache_checksum()
+        album = self.cache.get(cache_str, checksum=checksum)
+        if album:
+            return album
+
+        album = self.__spotipy.album(album_id, market=self.__user_country)
+        self.cache.set(cache_str, album, checksum=checksum)
+        return album
+
     def browse_album(self) -> None:
         xbmcplugin.setContent(self.__addon_handle, "songs")
-        album = self.__spotipy.album(self.__album_id, market=self.__user_country)
+        album = self.__get_album(self.__album_id)
         xbmcplugin.setProperty(self.__addon_handle, "FolderName", album["name"])
         tracks = self.__get_album_tracks(album)
         if album.get("album_type") == "compilation":
