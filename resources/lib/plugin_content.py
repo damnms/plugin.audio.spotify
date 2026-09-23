@@ -158,6 +158,7 @@ class PluginContent:
         self.init_spotipy(auth_token)
 
     def init_spotipy(self, auth_token: str) -> None:
+        self.__auth_token = auth_token
         self.__spotipy: spotipy.Spotify = spotipy.Spotify(auth=auth_token)
         me = self.__get_me()
         self.__userid: str = me["id"]
@@ -2023,22 +2024,41 @@ class PluginContent:
             )
 
     def __precache_library(self) -> None:
-        if not self.__win.getProperty("Spotify.PreCachedItems"):
-            monitor = xbmc.Monitor()
-            self.__win.setProperty("Spotify.PreCachedItems", "busy")
-            user_playlists = self.__get_user_playlists(self.__userid)
-            for playlist in user_playlists:
-                if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
-                    return
-                self.__get_playlist_details(playlist["id"], playlist)
+        if self.__win.getProperty("Spotify.PreCachedItems"):
+            return
+        self.__win.setProperty("Spotify.PreCachedItems", "busy")
+
+        # Background work must not wait for Spotify's rate limit. Waiting would use up
+        # the limit that the user's own clicks need. So use a client that gives up at once.
+        patient_spotipy = self.__spotipy
+        self.__spotipy = spotipy.Spotify(auth=self.__auth_token, status_retries=0)
+        try:
+            finished = self.__precache_steps()
+        except SpotifyException as exc:
+            if exc.http_status != 429:
+                raise
+            log_msg("Spotify rate limit reached. Precache stops for now.", xbmc.LOGINFO)
+            finished = False
+        finally:
+            self.__spotipy = patient_spotipy
+
+        # If not finished, the next visit to the main menu tries again.
+        self.__win.setProperty("Spotify.PreCachedItems", "done" if finished else "")
+
+    def __precache_steps(self) -> bool:
+        monitor = xbmc.Monitor()
+        user_playlists = self.__get_user_playlists(self.__userid)
+        for playlist in user_playlists:
             if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
-                return
-            self.__get_saved_albums()
-            if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
-                return
-            self.__get_saved_artists()
-            if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
-                return
-            self.__get_saved_tracks()
-            del monitor
-            self.__win.setProperty("Spotify.PreCachedItems", "done")
+                return False
+            self.__get_playlist_details(playlist["id"], playlist)
+        if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
+            return False
+        self.__get_saved_albums()
+        if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
+            return False
+        self.__get_saved_artists()
+        if monitor.waitForAbort(PRECACHE_PAUSE_SECONDS):
+            return False
+        self.__get_saved_tracks()
+        return True
