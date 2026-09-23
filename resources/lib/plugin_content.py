@@ -157,7 +157,6 @@ class PluginContent:
 
         self.init_spotipy(auth_token)
 
-
     def init_spotipy(self, auth_token: str) -> None:
         self.__spotipy: spotipy.Spotify = spotipy.Spotify(auth=auth_token)
         me = self.__get_me()
