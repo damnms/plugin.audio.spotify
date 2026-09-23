@@ -688,11 +688,16 @@ class PluginContent:
 
     def __get_playlist_details(self, playlist_id: str) -> Playlist:
         playlist = self.__spotipy.playlist(
-            playlist_id, fields="tracks(total),name,owner(id),id", market=self.__user_country
+            playlist_id,
+            fields="tracks(total),name,owner(id),id,snapshot_id",
+            market=self.__user_country,
         )
-        # Get from cache first.
+        # Get from cache first. Spotify changes 'snapshot_id' on every change to the
+        # playlist, also when tracks are replaced or reordered and the total stays the same.
         cache_str = f"spotify.playlistdetails.{playlist['id']}"
-        checksum = self.__cache_checksum(playlist["tracks"]["total"])
+        checksum = self.__cache_checksum(
+            f"{playlist['tracks']['total']}-{playlist.get('snapshot_id', '')}"
+        )
         # log_msg(f"Playlist cache_str = '{cache_str}', checksum = '{checksum}'.")
         playlist_details = self.cache.get(cache_str, checksum=checksum)
         if playlist_details:
@@ -718,7 +723,6 @@ class PluginContent:
                 tracks=playlist_details["tracks"]["items"], playlist_details=playlist
             )
             # log_msg(f"playlist_details = {playlist_details}")
-            checksum = self.__cache_checksum(playlist["tracks"]["total"])
             self.cache.set(cache_str, playlist_details, checksum=checksum)
             # log_msg(f"Got new playlist - checksum = '{checksum}'")
             cache_log(
