@@ -43,6 +43,9 @@ DO_CACHE_LOGGING = False
 # which changes the library checksum, so those show up at once.
 LIBRARY_CACHE_TIME = datetime.timedelta(minutes=10)
 
+# How long we remember who the user is (id, email, country).
+ME_CACHE_TIME = datetime.timedelta(days=1)
+
 # Pause between precache steps. It gives the user's own clicks the CPU first.
 PRECACHE_PAUSE_SECONDS = 0.2
 
@@ -152,7 +155,7 @@ class PluginContent:
 
     def init_spotipy(self, auth_token: str) -> None:
         self.__spotipy: spotipy.Spotify = spotipy.Spotify(auth=auth_token)
-        me = self.__spotipy.me()
+        me = self.__get_me()
         self.__userid: str = me["id"]
         self.__username: str = me["email"]
         self.__user_country = me["country"]
@@ -282,6 +285,29 @@ class PluginContent:
         header = self.__addon.getAddonInfo("name")
         msg = self.__addon.getLocalizedString(CACHED_CLEARED_STR_ID)
         dialog.ok(header, msg)
+
+    def __get_me(self) -> Dict[str, str]:
+        # Who the user is almost never changes, so do not ask Spotify on every click.
+        # A different client_id can mean a different login, so it is part of the checksum.
+        cache_str = "spotify.me"
+        checksum = f"me-{self.__addon.getSetting('user_client_id')}"
+        me = self.cache.get(cache_str, checksum=checksum)
+        if me and self.__auth_token_is_fresh():
+            return me
+
+        result = self.__spotipy.me()
+        me = {"id": result["id"], "email": result["email"], "country": result["country"]}
+        self.cache.set(cache_str, me, checksum=checksum, expiration=ME_CACHE_TIME)
+        return me
+
+    def __auth_token_is_fresh(self) -> bool:
+        # The me() call used to double as a token check (a bad token gives a 401 and
+        # a new login). Without that call, check the expiry time the service stored.
+        expires_at = self.__win.getProperty(utils.KODI_PROPERTY_AUTH_TOKEN_EXPIRES_AT)
+        try:
+            return int(expires_at) > int(time.time()) + 30
+        except ValueError:
+            return False
 
     def __library_checksum(self) -> str:
         # Never empty: an empty checksum would make simplecache skip the check and
