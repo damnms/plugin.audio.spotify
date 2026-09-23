@@ -46,6 +46,9 @@ LIBRARY_CACHE_TIME = datetime.timedelta(minutes=10)
 # How long we remember who the user is (id, email, country).
 ME_CACHE_TIME = datetime.timedelta(days=1)
 
+# How often we ask Spotify whether a playlist changed. Changes made in Kodi show at once.
+PLAYLIST_CHECK_TIME = datetime.timedelta(minutes=5)
+
 # Pause between precache steps. It gives the user's own clicks the CPU first.
 PRECACHE_PAUSE_SECONDS = 0.2
 
@@ -729,6 +732,29 @@ class PluginContent:
         if self.default_view_artists:
             xbmc.executebuiltin(f"Container.SetViewMode({self.default_view_artists})")
 
+    def __get_playlist_header(self, playlist_id: str) -> Dict[str, Any]:
+        # Asking Spotify whether a playlist changed costs one request, so do it at most
+        # every PLAYLIST_CHECK_TIME.
+        cache_str = f"spotify.playlistheader.{playlist_id}"
+        checksum = self.__cache_checksum()
+        header = self.cache.get(cache_str, checksum=checksum)
+        if header:
+            return header
+
+        header = self.__spotipy.playlist(
+            playlist_id,
+            fields="tracks(total),name,owner(id),id,snapshot_id",
+            market=self.__user_country,
+        )
+        self.cache.set(cache_str, header, checksum=checksum, expiration=PLAYLIST_CHECK_TIME)
+        return header
+
+    def __forget_playlist_header(self, playlist_id: str) -> None:
+        # Called after we changed the playlist in Kodi, so the next visit checks again.
+        self.cache.set(
+            f"spotify.playlistheader.{playlist_id}", None, expiration=datetime.timedelta(0)
+        )
+
     def __get_playlist_details(
         self, playlist_id: str, known_playlist: Dict[str, Any] = None
     ) -> Playlist:
@@ -746,11 +772,7 @@ class PluginContent:
                 "tracks": {"total": known_playlist["tracks"]["total"]},
             }
         else:
-            playlist = self.__spotipy.playlist(
-                playlist_id,
-                fields="tracks(total),name,owner(id),id,snapshot_id",
-                market=self.__user_country,
-            )
+            playlist = self.__get_playlist_header(playlist_id)
         # Get from cache first. Spotify changes 'snapshot_id' on every change to the
         # playlist, also when tracks are replaced or reordered and the total stays the same.
         cache_str = f"spotify.playlistdetails.{playlist['id']}"
@@ -881,14 +903,17 @@ class PluginContent:
                 name = kb.getText()
                 playlist = self.__spotipy.user_playlist_create(self.__userid, name, False)
                 self.__spotipy.playlist_add_items(playlist["id"], [self.__track_id])
+                self.__forget_playlist_header(playlist["id"])
         elif select != -1:
             playlist = own_playlists[select]
             self.__spotipy.playlist_add_items(playlist["id"], [self.__track_id])
+            self.__forget_playlist_header(playlist["id"])
 
     def remove_track_from_playlist(self) -> None:
         self.__spotipy.playlist_remove_all_occurrences_of_items(
             self.__playlist_id, [self.__track_id]
         )
+        self.__forget_playlist_header(self.__playlist_id)
         self.__library_changed()
 
     def unfollow_playlist(self) -> None:
