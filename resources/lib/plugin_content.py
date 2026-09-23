@@ -1,3 +1,4 @@
+import datetime
 import math
 import os
 import sys
@@ -36,6 +37,11 @@ CLEAR_CACHE_ICON = "icon_clear_cache.png"
 Playlist = Dict[str, Union[str, Dict[str, List[Any]]]]
 
 DO_CACHE_LOGGING = False
+
+# How long the user's library (saved tracks, saved albums, followed artists) is kept
+# before asking Spotify again. Likes and follows done in Kodi call refresh_listing(),
+# which changes the library checksum, so those show up at once.
+LIBRARY_CACHE_TIME = datetime.timedelta(minutes=10)
 
 
 def cache_log(msg) -> None:
@@ -281,6 +287,11 @@ class PluginContent:
         header = self.__addon.getAddonInfo("name")
         msg = self.__addon.getLocalizedString(CACHED_CLEARED_STR_ID)
         dialog.ok(header, msg)
+
+    def __library_checksum(self) -> str:
+        # Never empty: an empty checksum would make simplecache skip the check and
+        # return old entries written by earlier versions.
+        return f"library-{self.__addon.getSetting('cache_checksum')}"
 
     def refresh_listing(self) -> None:
         self.__addon.setSetting("cache_checksum", time.strftime("%Y%m%d%H%M%S", time.gmtime()))
@@ -1522,29 +1533,23 @@ class PluginContent:
             xbmc.executebuiltin(f"Container.SetViewMode({self.default_view_albums})")
 
     def __get_saved_album_ids(self) -> List[str]:
-        albums = self.__spotipy.current_user_saved_albums(limit=1, offset=0)
         cache_str = f"spotify-savedalbumids.{self.__userid}"
-        checksum = albums["total"]
+        checksum = self.__library_checksum()
         album_ids = self.cache.get(cache_str, checksum=checksum)
-        if album_ids:
+        if album_ids is not None:
             cache_log(f'Retrieved {len(album_ids)} cached album ids for user "{self.__userid}".')
             return album_ids
 
-        album_ids = []
-        if albums and albums.get("items"):
-            count = len(albums["items"])
-            album_ids = []
-            while albums["total"] > count:
-                albums["items"] += self.__spotipy.current_user_saved_albums(limit=50, offset=count)[
-                    "items"
-                ]
-                count += 50
-            for album in albums["items"]:
-                album_ids.append(album["album"]["id"])
-            self.cache.set(cache_str, album_ids, checksum=checksum)
-            cache_log(
-                f'Retrieved {_get_len(album_ids)} UNCACHED album ids for user "{self.__userid}".'
-            )
+        albums = self.__spotipy.current_user_saved_albums(limit=50, offset=0)
+        count = len(albums["items"])
+        while albums["total"] > count:
+            albums["items"] += self.__spotipy.current_user_saved_albums(limit=50, offset=count)[
+                "items"
+            ]
+            count += 50
+        album_ids = [album["album"]["id"] for album in albums["items"]]
+        self.cache.set(cache_str, album_ids, checksum=checksum, expiration=LIBRARY_CACHE_TIME)
+        cache_log(f'Retrieved {len(album_ids)} UNCACHED album ids for user "{self.__userid}".')
 
         return album_ids
 
@@ -1578,31 +1583,29 @@ class PluginContent:
             xbmc.executebuiltin(f"Container.SetViewMode({self.default_view_albums})")
 
     def __get_saved_track_ids(self) -> List[str]:
-        saved_tracks = self.__spotipy.current_user_saved_tracks(
-            limit=1, offset=self.__offset, market=self.__user_country
-        )
-        total = saved_tracks["total"]
         cache_str = f"spotify.savedtracksids.{self.__userid}"
-        track_ids = self.cache.get(cache_str, checksum=total)
-        if track_ids:
+        checksum = self.__library_checksum()
+        track_ids = self.cache.get(cache_str, checksum=checksum)
+        if track_ids is not None:
             cache_log(
                 f'Retrieved {len(track_ids)} cached saved track ids for user "{self.__userid}".'
             )
             return track_ids
 
         # Get from api.
-        track_ids = []
+        saved_tracks = self.__spotipy.current_user_saved_tracks(
+            limit=50, offset=0, market=self.__user_country
+        )
         count = len(saved_tracks["items"])
-        while total > count:
+        while saved_tracks["total"] > count:
             saved_tracks["items"] += self.__spotipy.current_user_saved_tracks(
                 limit=50, offset=count, market=self.__user_country
             )["items"]
             count += 50
-        for track in saved_tracks["items"]:
-            track_ids.append(track["track"]["id"])
-        self.cache.set(cache_str, track_ids, checksum=total)
+        track_ids = [track["track"]["id"] for track in saved_tracks["items"]]
+        self.cache.set(cache_str, track_ids, checksum=checksum, expiration=LIBRARY_CACHE_TIME)
         cache_log(
-            f'Retrieved {_get_len(track_ids)} UNCACHED saved track ids for user "{self.__userid}".'
+            f'Retrieved {len(track_ids)} UNCACHED saved track ids for user "{self.__userid}".'
         )
 
         return track_ids
@@ -1679,17 +1682,17 @@ class PluginContent:
             xbmc.executebuiltin(f"Container.SetViewMode({self.default_view_artists})")
 
     def __get_followed_artists(self) -> List[Dict[str, Any]]:
-        artists = self.__spotipy.current_user_followed_artists(limit=50)
         cache_str = f"spotify.followedartists.{self.__userid}"
-        checksum = artists["artists"]["total"]
+        checksum = self.__library_checksum()
 
         cached_artists = self.cache.get(cache_str, checksum=checksum)
-        if cached_artists:
+        if cached_artists is not None:
             artists = cached_artists
             cache_log(
                 f'Retrieved {len(artists)} cached followed artists for user "{self.__userid}".'
             )
         else:
+            artists = self.__spotipy.current_user_followed_artists(limit=50)
             count = len(artists["artists"]["items"])
             after = artists["artists"]["cursors"]["after"]
             while artists["artists"]["total"] > count:
@@ -1698,7 +1701,7 @@ class PluginContent:
                 after = result["artists"]["cursors"]["after"]
                 count += 50
             artists = self.__prepare_artist_listitems(artists["artists"]["items"], is_followed=True)
-            self.cache.set(cache_str, artists, checksum=checksum)
+            self.cache.set(cache_str, artists, checksum=checksum, expiration=LIBRARY_CACHE_TIME)
             cache_log(
                 f'Retrieved {_get_len(artists)} UNCACHED followed artists for user "{self.__userid}".'
             )
